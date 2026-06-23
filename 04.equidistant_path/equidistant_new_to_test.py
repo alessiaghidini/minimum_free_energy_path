@@ -126,17 +126,16 @@ def get_rmsd():
 ####### Plumed template input file #######
 def write_plumed_template_input(entity0, KAPPA_rmsd1, KAPPA_rmsd2):
     with open(plumed_template_file, 'w') as filout:
-        filout.write('''WHOLEMOLECULES ENTITY0={}
+        filout.write(f'''WHOLEMOLECULES ENTITY0={entity0}
 rmsd_1: RMSD REFERENCE=ref_pre TYPE=OPTIMAL
 rmsd_2: RMSD REFERENCE=ref_next TYPE=OPTIMAL
 MOVINGRESTRAINT ...
         ARG=rmsd_1,rmsd_2
         STEP0=0         AT0=rmsd1,rmsd2     KAPPA0=10.0,10.0
-        STEP1=half_s    AT1={},rmsd2    KAPPA1={},{}
-        STEP2=step      AT2={},rmsd2    KAPPA2={},{}
-        STEP3=step_t    AT3={},rmsd2    KAPPA3={},{}
+        STEP1=half_s    AT1={equidistance_nm},rmsd2    KAPPA1={KAPPA_rmsd1/2},{KAPPA_rmsd2/2}
+        STEP2=step      AT2={equidistance_nm},rmsd2    KAPPA2={KAPPA_rmsd1},{KAPPA_rmsd2}
 ... MOVINGRESTRAINT
-PRINT ARG=rmsd_1,rmsd_2 FILE=colvar STRIDE=10 FMT=%8.4f'''.format(entity0, equidistance_nm, KAPPA_rmsd1,KAPPA_rmsd2, (equidistance_nm-tollerance_nm) ,KAPPA_rmsd1,float(KAPPA_rmsd2)/2, (equidistance_nm-tollerance_nm) ,KAPPA_rmsd1,float(KAPPA_rmsd2)/5))
+PRINT ARG=rmsd_1,rmsd_2 FILE=colvar STRIDE=10 FMT=%8.4f''')
 
 ####### Plumed run input file #######
 def write_plumed_input(steps_md, ref_pre, ref_next, rmsd_1, rmsd_2):
