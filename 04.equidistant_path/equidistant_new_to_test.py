@@ -5,6 +5,8 @@ import subprocess
 import configparser
 import importlib
 
+ntomp = 4
+
 #################################################
 ####### check for all the modules install #######
 required_modules = ["numpy", "ast", "os","subprocess", "configparser"]
@@ -17,17 +19,16 @@ for module in required_modules:
         missing_modules.append(module)
 
 if missing_modules:
-    print("Please install the following modules: {', '.join(missing_modules)}")
+    print(f"Please install the following modules: {', '.join(missing_modules)}")
     print("You can install them using the following command:")
     print("pip install -r requirements.txt")
     exit(1)
 #################################################
 try:
-    import BiKi
+    import MDAnalysis as mda
 except ImportError:
-    print("The 'BiKi' module is not installed. Try:")
-    print(". path-to-biki/BiKiLifeSciences/enableEssentials.source")
-    print("or refererr to the BiKi manual")
+    print("The MDAnalysis module is not installed. Try:")
+    print("pip install MDAnalysis")
     exit(1)
 #################################################
 
@@ -130,12 +131,12 @@ rmsd_1: RMSD REFERENCE=ref_pre TYPE=OPTIMAL
 rmsd_2: RMSD REFERENCE=ref_next TYPE=OPTIMAL
 MOVINGRESTRAINT ...
         ARG=rmsd_1,rmsd_2
-        STEP0=0         AT0=rmsd1,rmsd2     KAPPA0=100.00,100.00
+        STEP0=0         AT0=rmsd1,rmsd2     KAPPA0=10.0,10.0
         STEP1=half_s    AT1={},rmsd2    KAPPA1={},{}
         STEP2=step      AT2={},rmsd2    KAPPA2={},{}
         STEP3=step_t    AT3={},rmsd2    KAPPA3={},{}
 ... MOVINGRESTRAINT
-PRINT ARG=rmsd_1,rmsd_2 FILE=colvar STRIDE=10 FMT=%8.4f'''.format(entity0, equidistance_nm, (equidistance_nm-tollerance_nm), (equidistance_nm-tollerance_nm), KAPPA_rmsd1,KAPPA_rmsd2,KAPPA_rmsd1,float(KAPPA_rmsd2)/2,KAPPA_rmsd1,float(KAPPA_rmsd2)/5))
+PRINT ARG=rmsd_1,rmsd_2 FILE=colvar STRIDE=10 FMT=%8.4f'''.format(entity0, equidistance_nm, KAPPA_rmsd1,KAPPA_rmsd2, (equidistance_nm-tollerance_nm) ,KAPPA_rmsd1,float(KAPPA_rmsd2)/2, (equidistance_nm-tollerance_nm) ,KAPPA_rmsd1,float(KAPPA_rmsd2)/5))
 
 ####### Plumed run input file #######
 def write_plumed_input(steps_md, ref_pre, ref_next, rmsd_1, rmsd_2):
@@ -165,11 +166,48 @@ def nearest(items, pivot):
 
 
 ########## select alignment and rmsd ######## 
-def reference(stru):
-    stru.select(selection_align).setAllOccupancies(1.0)
-    stru.select(selection_rmsd).setAllBetas(1.0)
-    return stru.select(sel_tot)
+def write_reference_pdb(gro_file, output_pdb):
+    u = mda.Universe(gro_file)
 
+    align = u.select_atoms(selection_align)
+    rmsd  = u.select_atoms(selection_rmsd)
+
+    u.add_TopologyAttr("occupancies")
+    u.add_TopologyAttr("tempfactors")
+
+    u.atoms.occupancies = 0.0
+    u.atoms.tempfactors = 0.0
+
+    u.atoms[align.indices].occupancies = 1.0
+    u.atoms[rmsd.indices].tempfactors = 1.0
+
+    u.atoms.write(output_pdb)
+
+    return output_pdb
+
+def filter_pdb_by_flags(input_pdb, output_pdb):
+    with open(input_pdb, "r") as f:
+        lines = f.readlines()
+
+    kept = []
+
+    for line in lines:
+        if not line.startswith("ATOM"):
+            kept.append(line)
+            continue
+
+        # PDB fixed columns:
+        occupancy = float(line[54:60])
+        beta = float(line[60:66])
+
+        # keep if selected in either mask
+        if occupancy == 1.0 or beta == 1.0:
+            kept.append(line)
+
+    with open(output_pdb, "w") as f:
+        f.writelines(kept)
+
+    return output_pdb
 
 ##########################################
 
@@ -183,6 +221,8 @@ def reference(stru):
 log_file = open('equidistant_frames.log', 'w')
 log_file.write('PROGRAM TO MAKE EQUIDISTANT THE FRAMES STARTING\n\n')
 
+log_file_index_list = open('gro_for_path.log', 'w')
+
 # prepare template plumed input to compute rmsd and perform steered md
 write_plumed_template_rmsd()
 write_plumed_template_input(entity0, KAPPA_rmsd1,KAPPA_rmsd2)
@@ -190,24 +230,24 @@ write_plumed_template_input(entity0, KAPPA_rmsd1,KAPPA_rmsd2)
 # read input file
 #plumed_path,gromacs_path,topology_file,index_file,equidistance_nm,KAPPA_rmsd1,KAPPA_rmsd2 = read_config(config_file)
 
-sel_tot = selection_align + " or " + selection_rmsd
-list_frames = list(range(1,(number_frames + 1)))
-
-path = BiKi.MultiStructure()
-first_frame = BiKi.Structure()
-first_frame.load(str(list_frames[0])+".gro")
-indices1 = ast.literal_eval(str(first_frame.selectIndices(selection_align)))
-indices2 = ast.literal_eval(str(first_frame.selectIndices(selection_rmsd)))
-
-str_first_frame = reference(first_frame)
-path.addStructure(str_first_frame)
+# final list of pdb for final path
+pdb_final_path = []
 
 # str_steered: structure to be moved during steered md
 # str_pre: previous structure (ref to compute rmsd_1)
 # str_next: following structure (ref to compute rmsd_2) 
 
+list_frames = list(range(1,(number_frames + 1)))
 frame_pre = list_frames[0]
 frame_steered = frame_pre
+
+pdb_final_path.append(f"{frame_pre}.pdb")
+log_file_index_list.write(f"{frame_pre}.pdb, ")
+
+# create pdb of first frame for path 
+write_reference_pdb(f"{frame_pre}.gro",f"{frame_pre}.pdb")
+filter_pdb_by_flags(f"{frame_pre}.pdb",f"{frame_pre}.pdb")
+
 
 # equispacing is repeated until frame_steered of previous replica is lower than list_frames-1
 # i.e., until new frame to steered is lower than list_frames
@@ -216,21 +256,17 @@ while frame_steered < len(list_frames)-1:
     frame_steered = frame_steered+1
     frame_next = frame_steered+1
     
-    # create files for structure and refs
-    str_pre = BiKi.Structure()
-    str_pre.load(str(frame_pre)+".gro")
-    str_ref = reference(str_pre)
-    str_ref.save(str(frame_pre)+"_ref.pdb")
-    str_next = BiKi.Structure()
-    str_next.load(str(frame_next)+".gro")
-    str_ref = reference(str_next)
-    str_ref.save(str(frame_next)+"_ref.pdb")
-    str_steered = BiKi.Structure()
-    str_steered.load(str(frame_steered)+".gro")
+    gro_steered = f"{frame_steered}.gro"
+    ref_pre = f"{frame_pre}_ref.pdb"
+    ref_next = f"{frame_next}_ref.pdb"
 
-    gro_steered = "{}.gro".format(frame_steered)
-    ref_pre = "{}_ref.pdb".format(frame_pre)
-    ref_next = "{}_ref.pdb".format(frame_next)
+    # create reference pdb
+    # previous
+    write_reference_pdb(f"{frame_pre}.gro",ref_pre)
+    filter_pdb_by_flags(ref_pre,ref_pre)
+    # next
+    write_reference_pdb(f"{frame_next}.gro",ref_next)
+    filter_pdb_by_flags(ref_next,ref_next)
     
     # compute rmsd1 with ref_pre and rmsd2 with ref_next
     write_plumed_rmsd(ref_pre, ref_next)
@@ -241,16 +277,16 @@ while frame_steered < len(list_frames)-1:
     log_file.write('\nrmsd1:{%f} - between {%s} and previous reference {%s} \nrmsd2:{%f} - between {%s} and next reference {%s}'%(rmsd1,frame_steered,ref_pre,rmsd2,frame_steered,ref_next))
     log_file.flush()
 
-    while (rmsd1 + equidistance_nm) < tollerance_nm:
+    while (rmsd1 + tollerance_nm) < equidistance_nm:
         frame_steered = frame_next
         frame_next = frame_steered+1
-        str_next = BiKi.Structure()
-        str_next.load(str(frame_next)+".gro")
-        str_ref = reference(str_next)
-        str_ref.save(str(frame_next)+"_ref.pdb")
+        gro_steered = f"{frame_steered}.gro"
+        ref_next = f"{frame_next}_ref.pdb"
+        # next
+        write_reference_pdb(f"{frame_next}.gro",ref_next)
+        filter_pdb_by_flags(ref_next,ref_next)
 
-        gro_steered = "{}.gro".format(frame_steered)
-        ref_next= "{}_ref.pdb".format(frame_next)
+        # compute rmsd1 with ref_pre and rmsd2 with ref_next
         write_plumed_rmsd(ref_pre, ref_next)
         plumed_rmsd = subprocess.Popen(plumed + "plumed driver --plumed %s --igro %s "%(plumed_rmsd_file,gro_steered), shell=True)
         plumed_rmsd.wait()
@@ -265,8 +301,8 @@ while frame_steered < len(list_frames)-1:
     interm_frames = int(rmsd1/equidistance_nm)
     log_file.write('\nexpected number of intermediate frames %d'%(interm_frames))
 
-    # steered md steps to perform (20 ps for intermediate frame) and inputs
-    steps_md = interm_frames*10000
+    # steered md steps to perform (100 ps for intermediate frame) and inputs
+    steps_md = interm_frames*50000
     write_gromacs_input(steps_md)
     write_plumed_input(steps_md, ref_pre, ref_next, rmsd1, rmsd2)
 
@@ -276,7 +312,7 @@ while frame_steered < len(list_frames)-1:
         log_file.write('\nsteered md for {%d} - {%d} intermediate frames to be moved'%(frame_steered,interm_frames))
         grompp_process = subprocess.Popen('{}{} -f {} -c {} -r {} -p {} -n {} -maxwarn 5 -o steered_md.tpr'.format(gromacs, gromppCommand, mdp_file, gro_steered, gro_steered, topology_file, index_file),shell=True)
         grompp_process.wait()
-        mdrun_process = subprocess.Popen('{}{} -deffnm steered_md -plumed {} -ntomp 8'.format(gromacs, mdrunCommand, plumed_run_file),shell=True)
+        mdrun_process = subprocess.Popen('{}{} -deffnm steered_md -plumed {} -ntomp {}'.format(gromacs, mdrunCommand, plumed_run_file, ntomp),shell=True)
         mdrun_process.wait()
         log_file.write('\n finished steered md for ' + str(frame_steered))
 
@@ -294,25 +330,24 @@ while frame_steered < len(list_frames)-1:
         # if condition is satisfied by a frame:
         if (np.abs(rmsdmin - equidistance_nm) < tollerance_nm):
             
-            # the frame is added to the path
             log_file.write('\n structure %s_%d after steered md satisfies equidistant condition'%(frame_steered,interm_frames))
             log_file.write('\n adding structure %s_%d to path'%(frame_steered,interm_frames))
             frame_equidistant = rmsd1_list.index(nearest(rmsd1_list, equidistance_nm))
-            new_str = BiKi.Structure()
-            new_str.load(str(frame_steered)+".gro")
-            trajLoader = BiKi.TrajectoryLoader(new_str)
-            trajLoader.addTrajectory("steered_md.xtc")
-            str_eq = trajLoader.getFrame(frame_equidistant)
-            str_eq.save(str(frame_steered)+"_"+str(interm_frames)+".gro")
-            new_gro = BiKi.Structure()
-            new_gro.load(str(frame_steered)+"_"+str(interm_frames)+".gro")
-            equidistant_structure = reference(new_gro)
-            path.addStructure(equidistant_structure)
             
-            # this frame becomes the new previous reference (next reference is the same and structure steered is the same)
-            str_ref = reference(new_gro)
-            str_ref.save(str(frame_steered)+"_"+str(interm_frames)+"_ref.pdb")
-            ref_pre = "{}_{}_ref.pdb".format(frame_steered,interm_frames)
+            # load frame with correct equidistance and save to gro file
+            new_str = mda.Universe(f"{frame_steered}.gro", "steered_md.xtc")
+            new_str.trajectory[frame_equidistant]
+            new_str.atoms.write(f"{frame_steered}_{interm_frames}.gro")
+            
+            # frame save as pdb frame and add to path  
+            # this becomes the new previous reference (next reference is the same and structure steered is the same)
+            frame_next = f"{frame_steered}_{interm_frames}"
+            ref_next = f"{frame_next}_ref.pdb"
+            pdb_final_path.append(ref_next)
+            log_file_index_list.write(f"{frame_next}_ref.pdb, ")
+            # next
+            write_reference_pdb(f"{frame_next}.gro",ref_next)
+            filter_pdb_by_flags(ref_next,ref_next)
             
             # compute rmsd1 with ref_pre and rmsd2 with ref_next
             write_plumed_rmsd(ref_pre, ref_next)
@@ -321,8 +356,8 @@ while frame_steered < len(list_frames)-1:
             #update of new intermediate frames
             interm_frames -= 1
 
-            # steered md steps to perform (20 ps for intermediate frame) and inputs
-            steps_md = interm_frames*10000
+            # steered md steps to perform (100 ps for intermediate frame) and inputs
+            steps_md = interm_frames*50000
             write_gromacs_input(steps_md)
             write_plumed_input(steps_md, ref_pre, ref_next, rmsd1, rmsd2)
 
@@ -335,10 +370,10 @@ while frame_steered < len(list_frames)-1:
             # the simulation is extended until the condition is satisfied          
                 while (True):
                     log_file.write('\nextension of steered md for %s - %d intermediate frames to be moved'%(frame_steered,interm_frames))
-                    convert_process = subprocess.Popen('{}{} -s steered_md.tpr -extend 10 -o steered_md.tpr'.format(gromacs,convertCommand), shell=True)
+                    convert_process = subprocess.Popen('{}{} -s steered_md.tpr -extend 50 -o steered_md.tpr'.format(gromacs,convertCommand), shell=True)
                     convert_process.wait()
     
-                    mdrun_process = subprocess.Popen('{}{} -deffnm steered_md -cpi steered_md.cpt -plumed {} -ntomp 8'.format(gromacs, mdrunCommand, plumed_run_file),shell=True)
+                    mdrun_process = subprocess.Popen('{}{} -deffnm steered_md -cpi steered_md.cpt -plumed {} -ntomp {}'.format(gromacs, mdrunCommand, plumed_run_file, ntomp),shell=True)
                     mdrun_process.wait()
     
                     log_file.write('\n finished steered md for ' + str(frame_steered))
@@ -360,21 +395,22 @@ while frame_steered < len(list_frames)-1:
                         log_file.write('\n structure %s_%d after steered md satisfies equidistant condition'%(frame_steered,interm_frames))
                         log_file.write('\n adding structure %s_%d to path'%(frame_steered,interm_frames))
                         frame_equidistant = rmsd1_list.index(nearest(rmsd1_list, equidistance_nm))
-                        new_str = BiKi.Structure()
-                        new_str.load(str(frame_steered)+".gro")
-                        trajLoader = BiKi.TrajectoryLoader(new_str)
-                        trajLoader.addTrajectory("steered_md.xtc")
-                        str_eq = trajLoader.getFrame(frame_equidistant)
-                        str_eq.save(str(frame_steered)+"_"+str(interm_frames)+".gro")
-                        new_gro = BiKi.Structure()
-                        new_gro.load(str(frame_steered)+"_"+str(interm_frames)+".gro")
-                        equidistant_structure = reference(new_gro)
-                        path.addStructure(equidistant_structure)
 
-                        # this frame becomes the new previous reference (next reference is the same and structure steered is the same)
-                        str_ref = reference(new_gro)
-                        str_ref.save(str(frame_steered)+"_"+str(interm_frames)+"_ref.pdb")
-                        ref_pre = "{}_{}_ref.pdb".format(frame_steered,interm_frames)
+
+                        # load frame with correct equidistance and save to gro file
+                        new_str = mda.Universe(f"{frame_steered}.gro", "steered_md.xtc")
+                        new_str.trajectory[frame_equidistant]
+                        new_str.atoms.write(f"{frame_steered}_{interm_frames}.gro")
+            
+                        # frame save as pdb frame and add to path  
+                        # this becomes the new previous reference (next reference is the same and structure steered is the same)
+                        frame_next = f"{frame_steered}_{interm_frames}"
+                        ref_next = f"{frame_next}_ref.pdb"
+                        pdb_final_path.append(ref_next)
+                        log_file_index_list.write(f"{frame_next}_ref.pdb, ")
+                        # next
+                        write_reference_pdb(f"{frame_next}.gro",ref_next)
+                        filter_pdb_by_flags(ref_next,ref_next)
 
                         # compute rmsd1 with ref_pre and rmsd2 with ref_next
                         write_plumed_rmsd(ref_pre, ref_next)
@@ -384,8 +420,8 @@ while frame_steered < len(list_frames)-1:
                         interm_frames -= 1
                         #log_file.write('\n\nstarting iteration %d_%d'%(frame_steered,interm_frames))
 
-                        # steered md steps to perform (20 ps for intermediate frame) and inputs
-                        steps_md = interm_frames*10000
+                        # steered md steps to perform (100 ps for intermediate frame) and inputs
+                        steps_md = interm_frames*50000
                         write_gromacs_input(steps_md)
                         write_plumed_input(steps_md, ref_pre, ref_next, rmsd1, rmsd2)
 
@@ -398,6 +434,12 @@ while frame_steered < len(list_frames)-1:
     frame_pre = str(frame_steered)+"_"+str(interm_frames)
 
 # save the final path as pdb
-path.saveMolecules("path_reference.pdb")
+    
+first = mda.Universe(pdb_final_path[0])
+with mda.Writer("reference_path.pdb", first.atoms.n_atoms) as W:
+    for pdb in pdb_final_path:
+        u = mda.Universe(pdb)
+        W.write(u.atoms)    
+
 log_file.write('\n\n Program finished - path_reference.pdb created')
 log_file.flush()
