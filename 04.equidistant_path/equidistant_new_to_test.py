@@ -72,8 +72,8 @@ def read_config():
     equidistance_nm = config.getfloat("Script_Parameters", "equidistance_nm", fallback=1.0)
     tollerance_nm = config.getfloat("Script_Parameters", "tollerance_nm", fallback=1.0)
 
-    KAPPA_rmsd1 = config.get("Plumed_Parameters", "KAPPA_rmsd1", fallback="")
-    KAPPA_rmsd2 = config.get("Plumed_Parameters", "KAPPA_rmsd2", fallback="")
+    KAPPA_rmsd1 = config.getfloat("Plumed_Parameters", "KAPPA_rmsd1", fallback="")
+    KAPPA_rmsd2 = config.getfloat("Plumed_Parameters", "KAPPA_rmsd2", fallback="")
 
 
     selection_align = config.get("System_Info", "atoms_for_alignment", fallback="")
